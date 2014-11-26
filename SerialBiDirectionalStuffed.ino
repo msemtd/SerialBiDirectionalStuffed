@@ -3,25 +3,27 @@
 /****************************************************************/
 /* 
  * Arduino Due has 64 byte RingBuffer on each USART and bytes are received under
- * interrupt.
+ * interrupt. 
+ * 
+ * On the Arduino Mega in recent 1.5 versions TX also occurs under interrupt.
  * 
  * This 2 channel FIFO fills up with up to "maxread" bytes each loop.
  * Byte-stuffing allows us to place interesting flags that indicate a change of 
  * channel (or other significant event). We are still subject to the buffering 
  * under RX interrupt but it shouldn't matter too much
  * 
- * The user can opt to use different special bytes to avoid clashes with real data
+ * The user can opt to use different special bytes to avoid clashes with real data (TODO?)
  * 
  * Other magic data can be stuffed into the stream!
- * 
  *   
  */
 
 #include "rb.h"
 
+// Special bytes...
 static uint8_t esc_next = 0x80;
-static uint8_t cha_sw = 0x81;
-static uint8_t chb_sw = 0x82;
+static uint8_t cha = 0x81;
+static uint8_t chb = 0x82;
 static uint8_t bfull = 0x83;
 
 static uint8_t rxc = 0;
@@ -30,74 +32,58 @@ static uint8_t chb_not_cha = 0;
 // maxread is the controller
 // before setting maxread the serial objects must be setup
 static uint16_t maxread = 0; // 0 == disabled
-#define BFIFO_SIZE 200
-static uint8_t bfifo[BFIFO_SIZE];
-static uint16_t bfhead = 0;
-static uint16_t bftail = 0;
 
+// Statistical counters...
 static uint32_t ctr_bfifo_full = 0;
 static uint32_t ctr_rxa = 0;
 static uint32_t ctr_rxb = 0;
 
-
-/*
- *  add a byte to the FIFO - fast
+/**
+ * Add a new byte to the combined buffer.
+ * We may need to add up to 3 bytes here!
+ * A channel change, an escape byte, the original byte.
  */
-static inline void fadd(uint8_t b) {
-    // next index for head presuming all is well - wrap if necessary
-    uint16_t ni = (bfhead + 1) % BFIFO_SIZE;
-    // safe to add?
-    if (ni != bftail) {
-        bfifo[bfhead] = b;
-        bfhead = ni;
-    } // TODO here we could have a special byte for FIFO full event
+static inline void newb(uint8_t b, uint8_t ch, uint8_t change_reqd) {
+	uint8_t esc_reqd = (rxc == esc_next || rxc == cha || rxc == chb
+			|| rxc == bfull);
+	// How much space is there?
+	uint16_t space = rb_space_available();
+	// How many bytes do we need
+	uint16_t breq = 1 + (change_reqd != 0) + (esc_reqd != 0);
+	if(space < breq){
+		ctr_bfifo_full++;
+		if(space > 1)
+			rb_add(bfull);
+		return;
+	}
+	if(change_reqd)
+		rb_add(ch);
+	if(esc_reqd)
+		rb_add(esc_next);
+	rb_add(b);
 }
 
-#define favailable() (bfhead != bftail)
-/*
- * Remove a byte from FIFO - only do this if data is available
- */
-static uint8_t fremove(void) {
-    if (bfhead == bftail)
-        return 0;
-    uint8_t uc = bfifo[bftail];
-    // next index for tail - wrap if necessary
-    bftail = (unsigned int) (bftail + 1) % BFIFO_SIZE;
-    return uc;
-}
 
 // maxread is the controller
 // before setting maxread the serial objects must be setup
 static inline void fstuff(void) {
-    for (uint16_t i = 0; i < maxread; i++) {
-        if (Serial1.available()) {
-            // data on channel A
-            ctr_rxa++;
-            rxc = (uint8_t) Serial1.read();
-            // channel swap to channel A required?
-            if (chb_not_cha) {
-                fadd(cha_sw);
-                chb_not_cha = 0;
-            }
-            // byte stuff if necessary
-            if (rxc == esc_next || rxc == cha_sw || rxc == chb_sw)
-                fadd(esc_next);
-            fadd(rxc);
-        } else if (Serial2.available()) {
-            // data on channel B
-            ctr_rxb++;
-            rxc = (char) Serial2.read();
-            // channel swap to channel B required?
-            if (!chb_not_cha) {
-                fadd(cha_sw);
-                chb_not_cha = 1;
-            }
-            // byte stuff if necessary
-            if (rxc == esc_next || rxc == cha_sw || rxc == chb_sw)
-                fadd(esc_next);
-            fadd(rxc);
-        } else return;
-    }
+	for (uint16_t i = 0; i < maxread; i++) {
+		if (Serial1.available()) {
+			// data on channel A
+			ctr_rxa++;
+			rxc = (uint8_t) Serial1.read();
+			Serial.print("*");
+			// channel swap to channel A required if current channel is B
+			newb(rxc, cha, chb_not_cha);
+		} else if (Serial2.available()) {
+			// data on channel B
+			ctr_rxb++;
+			rxc = (char) Serial2.read();
+			// channel swap to channel B required if current channel is A
+			newb(rxc, chb, (!chb_not_cha));
+		} else
+			return;
+	}
 
 }
 
@@ -112,7 +98,7 @@ void setup() {
     digitalWrite(13, LOW);
     // initialize serial:
     Serial.begin(115200);
-    Serial.println("SerialBiDirectionalStuffed v1.0");
+    Serial.println("SerialBiDirectionalStuffed v1.1");
     // reserve 200 bytes for the inputString:
     inputString.reserve(200);
     last = millis();
