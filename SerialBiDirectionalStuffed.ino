@@ -92,7 +92,7 @@ String inputString = "";         // a string to hold incoming data
 boolean inputStringComplete = false;  // whether the string is complete
 unsigned long last;
 static long collectPeriod = 1447;
-boolean human_readable = true;
+boolean human_readable = false;
 
 void channels_init(uint32_t baud);
 void processCommand(void);
@@ -104,7 +104,7 @@ void setup() {
 	digitalWrite(13, LOW);
 	// initialize serial:
 	Serial.begin(115200);
-	Serial.println("SerialBiDirectionalStuffed v1.0");
+	Serial.println("SerialBiDirectionalStuffed v1.1\n\n");
 	// reserve 200 bytes for the inputString:
 	inputString.reserve(200);
 	last = millis();
